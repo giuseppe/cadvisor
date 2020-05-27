@@ -44,6 +44,7 @@ import (
 	"github.com/google/cadvisor/utils/sysfs"
 	"github.com/google/cadvisor/version"
 	"github.com/google/cadvisor/watcher"
+	"github.com/opencontainers/runc/libcontainer/cgroups/cgroupv1"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"k8s.io/klog/v2"
@@ -154,7 +155,7 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, houskeepingConfig
 	if cgroups.IsCgroup2UnifiedMode() {
 		klog.Warningf("Cannot detect current cgroup on cgroup v2")
 	} else {
-		selfContainer, err := cgroups.GetOwnCgroupPath("cpu")
+		selfContainer, err := cgroupv1.GetOwnCgroupPath("cpu")
 		if err != nil {
 			return nil, err
 		}

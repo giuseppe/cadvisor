@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/cadvisor/container"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/cgroupv1"
 
 	fs "github.com/opencontainers/runc/libcontainer/cgroups/fs"
 	fs2 "github.com/opencontainers/runc/libcontainer/cgroups/fs2"
@@ -31,17 +32,51 @@ import (
 type CgroupSubsystems struct {
 	// Cgroup subsystem mounts.
 	// e.g.: "/sys/fs/cgroup/cpu" -> ["cpu", "cpuacct"]
-	Mounts []cgroups.Mount
+	Mounts []cgroupv1.Mount
 
 	// Cgroup subsystem to their mount location.
 	// e.g.: "cpu" -> "/sys/fs/cgroup/cpu"
 	MountPoints map[string]string
 }
 
+// Convert to the same structure we would get from libcontainer on cgroup v1.
+func getUnifiedMounts(includedMetrics *container.MetricSet) (CgroupSubsystems, error) {
+	ret := CgroupSubsystems{}
+	allSubsystems, err := cgroups.GetAllSubsystems()
+	if err != nil {
+		return ret, err
+	}
+	var subsystems []string
+	skipIO := includedMetrics != nil && !includedMetrics.Has(container.DiskIOMetrics)
+	for _, s := range allSubsystems {
+		//currently we only support disable blkio subsystem
+		if skipIO && s == "io" {
+			continue
+		}
+		subsystems = append(subsystems, s)
+	}
+	ret.Mounts = []cgroupv1.Mount{
+		{
+			Mountpoint: "/sys/fs/cgroup",
+			Root:       "/",
+			Subsystems: subsystems,
+		},
+	}
+	ret.MountPoints = map[string]string{}
+	for _, s := range subsystems {
+		ret.MountPoints[s] = "/sys/fs/cgroup"
+	}
+	return ret, nil
+}
+
 // Get information about the cgroup subsystems those we want
 func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems, error) {
 	// Get all cgroup mounts.
-	allCgroups, err := cgroups.GetCgroupMounts(true)
+	if cgroups.IsCgroup2UnifiedMode() {
+		return getUnifiedMounts(&includedMetrics)
+	}
+
+	allCgroups, err := cgroupv1.GetCgroupMounts(true)
 	if err != nil {
 		return CgroupSubsystems{}, err
 	}
@@ -51,7 +86,6 @@ func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems,
 	//currently we only support disable blkio subsystem
 	if !includedMetrics.Has(container.DiskIOMetrics) {
 		disableCgroups["blkio"] = struct{}{}
-		disableCgroups["io"] = struct{}{}
 	}
 	return getCgroupSubsystemsHelper(allCgroups, disableCgroups)
 }
@@ -59,7 +93,10 @@ func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems,
 // Get information about all the cgroup subsystems.
 func GetAllCgroupSubsystems() (CgroupSubsystems, error) {
 	// Get all cgroup mounts.
-	allCgroups, err := cgroups.GetCgroupMounts(true)
+	if cgroups.IsCgroup2UnifiedMode() {
+		return getUnifiedMounts(nil)
+	}
+	allCgroups, err := cgroupv1.GetCgroupMounts(true)
 	if err != nil {
 		return CgroupSubsystems{}, err
 	}
@@ -68,13 +105,13 @@ func GetAllCgroupSubsystems() (CgroupSubsystems, error) {
 	return getCgroupSubsystemsHelper(allCgroups, emptyDisableCgroups)
 }
 
-func getCgroupSubsystemsHelper(allCgroups []cgroups.Mount, disableCgroups map[string]struct{}) (CgroupSubsystems, error) {
+func getCgroupSubsystemsHelper(allCgroups []cgroupv1.Mount, disableCgroups map[string]struct{}) (CgroupSubsystems, error) {
 	if len(allCgroups) == 0 {
 		return CgroupSubsystems{}, fmt.Errorf("failed to find cgroup mounts")
 	}
 
 	// Trim the mounts to only the subsystems we care about.
-	supportedCgroups := make([]cgroups.Mount, 0, len(allCgroups))
+	supportedCgroups := make([]cgroupv1.Mount, 0, len(allCgroups))
 	recordedMountpoints := make(map[string]struct{}, len(allCgroups))
 	mountPoints := make(map[string]string, len(allCgroups))
 	for _, mount := range allCgroups {
